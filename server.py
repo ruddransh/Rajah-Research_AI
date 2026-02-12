@@ -69,15 +69,26 @@ def save_to_drive(service, df, filename_prefix="Research_Updates"):
 # ==========================================
 # 2. CLINICAL TRIALS SCOUT
 # ==========================================
-def fetch_recent_trials(disease_query, months_back=6):
+def fetch_recent_trials(user_query, months_back=6):
     today = datetime.date.today()
     start_date_threshold = today - datetime.timedelta(days=30*months_back)
     
+    # --- 🧠 SMART SEARCH LOGIC ---
+    # If the user asks for "ARDS", we automatically expand the net to catch related diseases.
+    # This ensures we don't miss trials listed under "Sepsis" that also study ARDS.
+    
+    search_term = user_query
+    
+    if "ards" in user_query.lower() or "acute respiratory" in user_query.lower():
+        # The " OR " operator tells ClinicalTrials.gov to find ANY of these
+        search_term = "ARDS OR Acute Respiratory Distress Syndrome OR Sepsis OR Pneumonia OR Influenza OR COVID-19 OR Respiratory Failure"
+        print(f"🧬 ARDS Mode Activated: Expanded search to '{search_term}'")
+
     statuses = ["RECRUITING", "NOT_YET_RECRUITING", "ACTIVE_NOT_RECRUITING"]
     status_string = ",".join(statuses)
 
     params = {
-        "query.term": disease_query,       
+        "query.term": search_term,       
         "filter.overallStatus": status_string,
         "pageSize": 300,                   
         "sort": "StudyFirstPostDate:desc"  
@@ -106,6 +117,7 @@ def fetch_recent_trials(disease_query, months_back=6):
             loc_module = protocol.get('contactsLocationsModule', {})
             desc_module = protocol.get('descriptionModule', {})
 
+            # --- DATE FILTER ---
             start_date_str = status_module.get('startDateStruct', {}).get('date')
             if not start_date_str: continue
 
@@ -115,15 +127,32 @@ def fetch_recent_trials(disease_query, months_back=6):
                 if dt < start_date_threshold: continue
             except: continue
 
+            # --- 🧠 RELEVANCE CHECK ---
+            # Even though we searched for "Flu", we only want it if it's relevant to the USER'S query.
+            # We grab the condition list and the summary.
             all_conditions = cond_module.get('conditions', [])
-            matches = [c for c in all_conditions if disease_query.lower() in c.lower()]
-            if not matches: continue 
+            brief_summary = desc_module.get('briefSummary', '').lower()
+            conditions_str = ", ".join(all_conditions).lower()
+            
+            # If the user typed "ARDS", we specifically check if ARDS is mentioned 
+            # in the Conditions OR the Summary (broader catch).
+            if "ards" in user_query.lower():
+                 keywords = ["ards", "acute respiratory", "lung injury", "respiratory failure"]
+                 # It's a match if ANY keyword appears in conditions OR summary
+                 is_relevant = any(k in conditions_str for k in keywords) or any(k in brief_summary for k in keywords)
+                 
+                 if not is_relevant: continue # Skip if it's just a pure "Flu" trial with no respiratory failure mention
+            
+            # Standard check for other diseases (non-ARDS)
+            else:
+                matches = [c for c in all_conditions if user_query.lower() in c.lower()]
+                if not matches: continue
 
             studies.append({
                 "NCT Number": id_module.get('nctId'),
                 "Study title": id_module.get('briefTitle'),
                 "Study status": status_module.get('overallStatus'),
-                "Condition": ", ".join(matches),  
+                "Condition": ", ".join(all_conditions),  
                 "Intervention": ", ".join([f"{i.get('name')}" for i in int_module.get('interventions', [])]) or "N/A",
                 "Phase of study": ", ".join(design_module.get('phases', [])) if design_module.get('phases') else "Not Specified",
                 "Enrollment number": design_module.get('enrollmentInfo', {}).get('count', 'N/A'),
