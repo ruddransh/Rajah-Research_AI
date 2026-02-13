@@ -215,7 +215,7 @@ def analyze_trials_against_research(research_text, trials_list):
     print(f"✅ Context: {research_summary}")
 
     analyzed_data = []
-    BATCH_SIZE = 20
+    BATCH_SIZE = 5
     
     analysis_prompt = ChatPromptTemplate.from_template("""
     MY RESEARCH SUMMARY: {research_summary}
@@ -352,3 +352,4 @@ if __name__ == '__main__':
     print(f"🚀 Research Agent Server Running on Port {port}...")
 
     app.run(host='0.0.0.0', port=port, debug=True)
+
