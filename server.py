@@ -69,28 +69,31 @@ def save_to_drive(service, df, filename_prefix="Research_Updates"):
 # ==========================================
 # 2. CLINICAL TRIALS SCOUT
 # ==========================================
-def fetch_recent_trials(user_query, months_back=6):
+def fetch_recent_trials(disease_query, months_back=6):
     today = datetime.date.today()
     start_date_threshold = today - datetime.timedelta(days=30*months_back)
     
-    # --- 🧠 SMART SEARCH LOGIC ---
-    # If the user asks for "ARDS", we automatically expand the net to catch related diseases.
-    # This ensures we don't miss trials listed under "Sepsis" that also study ARDS.
-    
-    search_term = user_query
-    
-    if "ards" in user_query.lower() or "acute respiratory" in user_query.lower():
-        # The " OR " operator tells ClinicalTrials.gov to find ANY of these
-        search_term = "ARDS OR Acute Respiratory Distress Syndrome OR Sepsis OR Pneumonia OR Influenza OR COVID-19 OR Respiratory Failure"
-        print(f"🧬 ARDS Mode Activated: Expanded search to '{search_term}'")
+    # 🕵️ THE SMART SWITCH
+    # Checks if the user is looking for ARDS specifically.
+    is_ards_mode = "ards" in disease_query.lower() or "acute respiratory" in disease_query.lower()
 
-    statuses = ["RECRUITING", "NOT_YET_RECRUITING", "ACTIVE_NOT_RECRUITING"]
+    if is_ards_mode:
+        # 🔴 ARDS MODE: Expand search to "The Gang" (Related diseases)
+        search_term = "ARDS OR Sepsis OR Pneumonia OR Influenza OR Acute Respiratory Failure"
+        print(f"🌊 ARDS Mode Activated: Expanded search to '{search_term}'")
+    else:
+        # 🟢 NORMAL MODE: Search exactly what the user typed
+        search_term = disease_query
+        print(f"🔍 Normal Mode: Searching for '{search_term}'")
+
+    # Common Settings for everyone
+    statuses = ["RECRUITING", "NOT_YET_RECRUITING", "ACTIVE_NOT_RECRUITING"] 
     status_string = ",".join(statuses)
 
     params = {
         "query.term": search_term,       
         "filter.overallStatus": status_string,
-        "pageSize": 300,                   
+        "pageSize": 100,  
         "sort": "StudyFirstPostDate:desc"  
     }
     
@@ -106,8 +109,25 @@ def fetch_recent_trials(user_query, months_back=6):
         return []
     
     studies = []
+    
+    # 🛑 ARDS-SPECIFIC BLACKLIST (Only used in ARDS Mode)
+    BLACKLIST_KEYWORDS = [
+        "cancer", "tumor", "carcinoma", "oncology",   
+        "long covid", "post-covid", "post-acute",     
+        "chronic", "rehabilitation", "survivor",      
+        "outpatient", "vaccine", "prevention",        
+        "depression", "anxiety", "survey"             
+    ]
+
+    # ✅ ARDS-SPECIFIC WHITELIST (Only used in ARDS Mode)
+    CRITICAL_KEYWORDS = [
+        "ards", "acute respiratory", "lung injury", "respiratory failure", 
+        "sepsis", "pneumonia", "influenza", "ventilation", "icu", "critical care"
+    ]
+    
     if 'studies' in data:
         for study in data['studies']:
+            # ... (Standard extraction code) ...
             protocol = study.get('protocolSection', {})
             id_module = protocol.get('identificationModule', {})
             status_module = protocol.get('statusModule', {})
@@ -117,42 +137,45 @@ def fetch_recent_trials(user_query, months_back=6):
             loc_module = protocol.get('contactsLocationsModule', {})
             desc_module = protocol.get('descriptionModule', {})
 
-            # --- DATE FILTER ---
+            # --- DATE FILTER (Applies to EVERYONE) ---
             start_date_str = status_module.get('startDateStruct', {}).get('date')
             if not start_date_str: continue
 
             try:
                 if len(start_date_str) == 7: dt = datetime.datetime.strptime(start_date_str, "%Y-%m").date()
                 else: dt = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
-                if dt < start_date_threshold: continue
+                if dt < start_date_threshold: continue 
             except: continue
 
-            # --- 🧠 RELEVANCE CHECK ---
-            # Even though we searched for "Flu", we only want it if it's relevant to the USER'S query.
-            # We grab the condition list and the summary.
-            all_conditions = cond_module.get('conditions', [])
-            brief_summary = desc_module.get('briefSummary', '').lower()
-            conditions_str = ", ".join(all_conditions).lower()
+            # --- 🧠 CONDITIONAL LOGIC ---
             
-            # If the user typed "ARDS", we specifically check if ARDS is mentioned 
-            # in the Conditions OR the Summary (broader catch).
-            if "ards" in user_query.lower():
-                 keywords = ["ards", "acute respiratory", "lung injury", "respiratory failure"]
-                 # It's a match if ANY keyword appears in conditions OR summary
-                 is_relevant = any(k in conditions_str for k in keywords) or any(k in brief_summary for k in keywords)
-                 
-                 if not is_relevant: continue # Skip if it's just a pure "Flu" trial with no respiratory failure mention
+            if is_ards_mode:
+                # 🔴 ARDS RULES (Strict)
+                full_text_blob = (
+                    id_module.get('briefTitle', '') + " " + 
+                    ", ".join(cond_module.get('conditions', []))
+                ).lower()
+
+                # Rule 1: Kick out Blacklisted words (Cancer, Chronic, etc.)
+                if any(bad_word in full_text_blob for bad_word in BLACKLIST_KEYWORDS):
+                    continue 
+
+                # Rule 2: Must match Whitelisted words (Sepsis, ICU, etc.)
+                is_relevant = any(good_word in full_text_blob for good_word in CRITICAL_KEYWORDS)
+                if not is_relevant:
+                    continue 
             
-            # Standard check for other diseases (non-ARDS)
             else:
-                matches = [c for c in all_conditions if user_query.lower() in c.lower()]
-                if not matches: continue
+                # 🟢 NORMAL RULES (Relaxed)
+                # We skip the blacklist. We skip the whitelist.
+                # We simply trust the API result.
+                pass
 
             studies.append({
                 "NCT Number": id_module.get('nctId'),
                 "Study title": id_module.get('briefTitle'),
                 "Study status": status_module.get('overallStatus'),
-                "Condition": ", ".join(all_conditions),  
+                "Condition": ", ".join(cond_module.get('conditions', [])),  
                 "Intervention": ", ".join([f"{i.get('name')}" for i in int_module.get('interventions', [])]) or "N/A",
                 "Phase of study": ", ".join(design_module.get('phases', [])) if design_module.get('phases') else "Not Specified",
                 "Enrollment number": design_module.get('enrollmentInfo', {}).get('count', 'N/A'),
@@ -163,6 +186,7 @@ def fetch_recent_trials(user_query, months_back=6):
                 "BriefSummary": desc_module.get('briefSummary', '')
             })
 
+    print(f"✅ Found {len(studies)} trials")
     return studies
 
 # ==========================================
@@ -326,4 +350,5 @@ if __name__ == '__main__':
     # Use PORT environment variable for Render, default to 5000 for local
     port = int(os.environ.get("PORT", 5000))
     print(f"🚀 Research Agent Server Running on Port {port}...")
+
     app.run(host='0.0.0.0', port=port, debug=True)
